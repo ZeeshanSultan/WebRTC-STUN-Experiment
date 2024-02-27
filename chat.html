@@ -12,7 +12,9 @@
     <div id="instructions">Instructions will appear here...</div>
     <div id="connectionElements">
         <!-- Wrap connection elements -->
-        <input type="text" id="nickname" placeholder="Enter your nickname" />
+        <div id="nicknameDiv">Nickname : <input type="text" id="nickname" placeholder="Enter your nickname" /></div>
+        <div id="aesKeyDiv">AES Key (Base64) : <input type="text" id="aesKey" placeholder="Enter your shared AES key" /> i.e. yANH2z/pK7DXXia3UyHtnw==</div>
+
 
         <button id="initiateConnection">Initiate Connection</button>
         <div id="encodedOffer" style="white-space: pre-wrap;"></div>

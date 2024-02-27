@@ -2,10 +2,89 @@ let peerConnection = new RTCPeerConnection();
 let dataChannel = null;
 let isInitiator = false;
 let localNickname = '';
+let sharedKey = null;
 
 // Elements for showing/hiding
 const connectionElements = document.getElementById('connectionElements');
 const chatElements = document.getElementById('chatElements');
+
+// Import encryption Key
+function base64ToArrayBuffer(base64) {
+    const binaryString = window.atob(base64); // Decode base64
+    const len = binaryString.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+    }
+    return bytes.buffer;
+}
+
+async function importKey(keyBuffer) {
+    return await window.crypto.subtle.importKey(
+        "raw", // format
+        keyBuffer, // key in ArrayBuffer format
+        { // Algorithm the key will be used with
+            name: "AES-GCM",
+        },
+        false, // whether the key is extractable (i.e., can be used in exportKey)
+        ["encrypt", "decrypt"] // what operations the key can be used for
+    );
+}
+
+async function setupEncryptionKey() {
+    const aesKeyBase64 = document.getElementById('aesKey').value.trim();
+    if (!aesKeyBase64) {
+        console.error('No AES key provided.');
+        return;
+    }
+
+    const keyBuffer = base64ToArrayBuffer(aesKeyBase64);
+    try {
+        sharedKey = await importKey(keyBuffer);
+        console.log('Key imported successfully:', sharedKey);
+        return sharedKey; // This is the key you'll use for encryption/decryption
+    } catch (error) {
+        console.error('Key import failed:', error);
+    }
+}
+
+
+// Encryption Block
+async function encryptMessage(key, data) {
+    const encoder = new TextEncoder();
+    const encodedData = encoder.encode(data);
+    const iv = window.crypto.getRandomValues(new Uint8Array(12)); // AES-GCM IV
+
+    const encryptedData = await window.crypto.subtle.encrypt({
+            name: "AES-GCM",
+            iv: iv,
+        },
+        key,
+        encodedData
+    );
+
+    // Convert encrypted data to base64 and iv to a string for sending
+    const encryptedDataB64 = btoa(String.fromCharCode(...new Uint8Array(encryptedData)));
+    const ivB64 = btoa(String.fromCharCode(...iv));
+    return { encryptedData: encryptedDataB64, iv: ivB64 };
+}
+
+// Decryption Block
+async function decryptMessage(key, encryptedDataB64, ivB64) {
+    const encryptedData = Uint8Array.from(atob(encryptedDataB64), c => c.charCodeAt(0));
+    const iv = Uint8Array.from(atob(ivB64), c => c.charCodeAt(0));
+
+    const decryptedData = await window.crypto.subtle.decrypt({
+            name: "AES-GCM",
+            iv: iv,
+        },
+        key,
+        encryptedData
+    );
+
+    const decoder = new TextDecoder();
+    return decoder.decode(decryptedData);
+}
 
 document.getElementById('initiateConnection').onclick = async() => {
     isInitiator = true;
@@ -29,16 +108,25 @@ document.getElementById('initiateConnection').onclick = async() => {
     // Hide the "Initiate Connection" button
     document.getElementById('initiateConnection').style.display = 'none';
     if (document.getElementById('nickname').value.trim() !== '') {
-        document.getElementById('nickname').style.display = 'none';
+        document.getElementById('nicknameDiv').style.display = 'none';
+    }
+    if (document.getElementById('aesKey').value.trim() !== '') {
+        document.getElementById('aesKeyDiv').style.display = 'none';
     }
 };
 
 document.getElementById('connect').onclick = async() => {
+    if (document.getElementById('aesKey').value.trim() == '') {
+        updateInstructions("AES Key is required for encryption. Please enter a valid key.");
+        return;
+    }
     const encodedConnectionInfo = document.getElementById('connectionInfo').value;
     const decodedConnectionInfo = atob(encodedConnectionInfo);
     const connectionInfo = JSON.parse(decodedConnectionInfo);
     console.log("Attempting to connect...");
     updateInstructions("Attempting to connect. Please wait...");
+
+    await setupEncryptionKey();
 
     if (!isInitiator) {
         peerConnection.ondatachannel = (event) => {
@@ -66,7 +154,10 @@ document.getElementById('connect').onclick = async() => {
 
     //Hide nickname field if filled
     if (document.getElementById('nickname').value.trim() !== '') {
-        document.getElementById('nickname').style.display = 'none';
+        document.getElementById('nicknameDiv').style.display = 'none';
+    }
+    if (document.getElementById('aesKey').value.trim() !== '') {
+        document.getElementById('aesKeyDiv').style.display = 'none';
     }
 
     // Update instructions with additional information
@@ -113,8 +204,11 @@ async function gatherComplete(pc) {
 function setupDataChannel() {
     dataChannel.onopen = () => console.log("Data channel opened.");
     dataChannel.onclose = () => console.log("Data channel closed.");
-    dataChannel.onmessage = (event) => {
-        const messageData = JSON.parse(event.data);
+    dataChannel.onmessage = async(event) => {
+        const { encryptedData, iv } = JSON.parse(event.data);
+        const decryptedMessage = await decryptMessage(sharedKey, encryptedData, iv);
+        const messageData = JSON.parse(decryptedMessage);
+
         const formattedTime = moment(messageData.timestamp).fromNow();
         document.getElementById('chat').value += `[${formattedTime}] ${messageData.nickname}: ${messageData.message}\n`;
     };
@@ -132,7 +226,7 @@ document.getElementById('message').addEventListener('keypress', (event) => {
     }
 });
 
-function sendMessage() {
+async function sendMessage() {
     const message = document.getElementById('message').value;
     localNickname = document.getElementById('nickname').value || 'Anonymous'; // Get or default to 'Anonymous'
     if (message === '') return; // Prevent sending empty messages
@@ -143,7 +237,9 @@ function sendMessage() {
         timestamp: new Date() // Use the current date/time for the timestamp
     };
 
-    dataChannel.send(JSON.stringify(messageData)); // Send stringified message data
+    const encrypted = await encryptMessage(sharedKey, JSON.stringify(messageData));
+    dataChannel.send(JSON.stringify(encrypted)); // Send encrypted data and iv
+
     const formattedTime = moment(messageData.timestamp).fromNow();
     document.getElementById('chat').value += `[${formattedTime}] You: ${messageData.message}\n`;
     document.getElementById('message').value = ''; // Clear the input after sending
@@ -151,4 +247,8 @@ function sendMessage() {
 
 function updateInstructions(message) {
     document.getElementById('instructions').innerText = message;
+}
+
+document.getElementById('connectionInfo').onpaste = async() => {
+    document.getElementById("initiateConnection").style.display = 'none';
 }
