@@ -1,4 +1,5 @@
-let peerConnection = new RTCPeerConnection();
+let iceConfig = { "iceServers": [{ "urls": "stun:stun.l.google.com:19302" }] }; // STUN server
+let peerConnection = new RTCPeerConnection(iceConfig);
 let dataChannel = null;
 let isInitiator = false;
 let localNickname = '';
